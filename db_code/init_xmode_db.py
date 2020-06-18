@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import psycopg2
 import argparse
 import utils
@@ -8,6 +9,7 @@ import pickle
 from config import *
 import time
 import glob
+import io
 import csv, gzip
 from datetime import datetime
 from timezonefinder import TimezoneFinder
@@ -133,15 +135,301 @@ def get_venue_table():
     return(venue_tab)
 
 
-def init_ping_table(fileList):
+
+
+def init_ping_table3(fileList):
+    venue_tab = get_venue_table()
+
+    # Open connection
+    # The SQLAlchemy connection to the database
+    conn = engine.connect()
+    # A raw psycopg2 DB connection
+    raw_conn = engine.raw_connection()
+    # A cursor using the raw connection
+    cur = raw_conn.cursor()
+    cur.execute('SELECT version()')
+    print(cur.fetchone()[0])
+
+
+    t1 = time.perf_counter()
+    inFile = fileList[0]
+    index = 0
+
+    dat = pd.read_csv(
+        inFile,
+        usecols = [e for e in ping_dtypes],
+        dtype = ping_dtypes,
+        escapechar="\\"
+    )
+
+    # string formatting
+    dat['wifi_ssid'] = dat['wifi_ssid'].str.replace('"', '')
+    dat['wifi_ssid'] = dat['wifi_ssid'].str.strip()
+    dat['wifi_ssid'] = dat['wifi_ssid'].replace('<unknown ssid>', np.nan)
+    dat['wifi_bssid'] = dat['wifi_bssid'].replace('<unknown bssid>', np.nan)
+    dat.replace(r'^\s*$', np.nan, regex=True, inplace=True)
+
+
+    dat = dat.where((pd.notnull(dat)), 'Null')
+    dat.insert(0, 'rid', range(index, index + len(dat)))
+
+    #add additional datetime unaware
+    dat.insert(3, 'timestamp_notz', pd.to_datetime(dat['location_at'], unit='s'))
+
+    # venue id
+    venue = dat['venue_name']
+    v_id = []
+    for v in venue:
+        if v == 'Null':
+            v_id.append('Null')
+        else:
+            if v in venue_tab:
+                v_id.append(str(venue_tab[v]))
+            else:
+                logging.error("Venue " + v + " not found in database")
+    dat['venue_name'] = v_id
+
+    #write to csv in memory
+    output = io.StringIO()
+    dat.to_csv(output, sep='\t', header=False, index=False)
+    output.seek(0)
+
+    #push to db
+    #print(output.getvalue())
+    cur.copy_from(output, 'pings', sep='\t', null='Null')
+    # Commit inserts to DB
+    raw_conn.commit()
+
+    t2 = time.perf_counter()
+    print(f"Time {t2-t1:0.4f} seconds")
+
+def init_ping_table2(fileList):
     venue_tab = get_venue_table()
     tf = TimezoneFinder()
+
     ins = Pings.__table__.insert()
+
+    # Open connection
+    # The SQLAlchemy connection to the database
+    conn = engine.connect()
+    # A raw psycopg2 DB connection
+    raw_conn = engine.raw_connection()
+    # A cursor using the raw connection
+    cur = raw_conn.cursor()
+    cur.execute('SELECT version()')
+    print(cur.fetchone()[0])
+
 
     t1 = time.perf_counter()
     # assumption: first row of data must be header
     inFile = fileList[0]
     inds = {}
+
+    # Text output object
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    data_to_insert = []
+    c = 0
+    with gzip.open(inFile, 'rt') as f:
+        # csv_reader = csv.reader(f,escapechar='\\')
+        csv_reader = csv.reader((x.replace('\0', '') for x in f), escapechar='\\')
+        for line in csv_reader:
+            if c == 0:
+                inds = get_header_index(line)
+            else:
+
+
+
+
+                advertiser_id = line[inds['advertiser_id']]
+                location_at = line[inds['location_at']]
+                latitude = line[inds['latitude']]
+                longitude = line[inds['longitude']]
+                altitude = line[inds['altitude']]
+                horizontal_accuracy = line[inds['horizontal_accuracy']]
+                vertical_accuracy = line[inds['vertical_accuracy']]
+                heading = line[inds['heading']]
+                speed = line[inds['speed']]
+                ipv_4 = line[inds['ipv_4']]
+                ipv_6 = line[inds['ipv_6']]
+                final_country = line[inds['final_country']]
+                user_agent = line[inds['user_agent']]
+                background = line[inds['background']]
+                publisher_id = line[inds['publisher_id']]
+                wifi_ssid = line[inds['wifi_ssid']]
+                wifi_bssid = line[inds['wifi_bssid']]
+                venue_name = line[inds['venue_name']]
+                dwell_time = line[inds['dwell_time']]
+
+                # only take records with lat,lng, and time data
+                if latitude != '' or longitude != '' or location_at != '':
+                    latitude = float(latitude)
+                    longitude = float(longitude)
+                    location_at = int(location_at)
+
+                    try:
+                        # time zone
+                        #tz_name = tf.timezone_at(lng=longitude, lat=latitude)
+                        #tz = timezone(tz_name)
+                        timestamp = datetime.utcfromtimestamp(location_at)
+                        #timestamp = timestamp.replace(tzinfo=tz)
+
+                        # venue
+                        # if there is a venue get its id from venue_tab
+                        venue_id = 'Null'
+                        if venue_name in venue_tab:
+                            venue_id = venue_tab[venue_name]
+
+                        # convert strings to floats
+                        if altitude != '':
+                            altitude = float(altitude)
+                        else:
+                            altitude = 'Null'
+
+                        if horizontal_accuracy != '':
+                            horizontal_accuracy = float(horizontal_accuracy)
+                        else:
+                            horizontal_accuracy = 'Null'
+
+                        if vertical_accuracy != '':
+                            vertical_accuracy = float(vertical_accuracy)
+                        else:
+                            vertical_accuracy = 'Null'
+
+                        if speed != '':
+                            speed = float(speed)
+                        else:
+                            speed = 'Null'
+
+                        if dwell_time != '':
+                            dwell_time = float(dwell_time)
+                        else:
+                            dwell_time = 'Null'
+
+                        # convert empty strings to none
+                        if heading == '':
+                            heading = 'Null'
+                        else:
+                            heading = heading.replace('\t',' ').strip()
+
+                        if ipv_4 == '':
+                            ipv_4 = 'Null'
+                        else:
+                            ipv_4 = ipv_4.replace('\t',' ').strip()
+
+                        if ipv_6 == '':
+                            ipv_6 = 'Null'
+                        else:
+                            ipv_6 = ipv_6.replace('\t', ' ').strip()
+
+                        if final_country == '':
+                            final_country = 'Null'
+                        else:
+                            final_country = final_country.replace('\t',' ').strip()
+
+                        if user_agent == '':
+                            user_agent = 'Null'
+                        else:
+                            user_agent = user_agent.replace('\t', ' ').strip()
+
+                        if background == '':
+                            background = 'Null'
+                        else:
+                            background = background.replace('\t', ' ').strip()
+
+                        if publisher_id == '':
+                            publisher_id = 'Null'
+                        else:
+                            publisher_id = publisher_id.replace('\t', ' ').strip()
+
+                        if wifi_ssid == '':
+                            wifi_ssid = 'Null'
+                        else:
+                            wifi_ssid = wifi_ssid.replace('\t', ' ')
+                            wifi_ssid = wifi_ssid.strip()
+
+                        if wifi_bssid == '':
+                            wifi_bssid = 'Null'
+                        else:
+                            wifi_bssid = wifi_bssid.replace('\t', ' ').strip()
+
+                        temp_dat = [
+                            c,
+                            advertiser_id,
+                            location_at,
+                            timestamp,
+                            latitude,
+                            longitude,
+                            altitude,
+                            horizontal_accuracy,
+                            vertical_accuracy,
+                            heading,
+                            speed,
+                            ipv_4,
+                            ipv_6,
+                            final_country,
+                            user_agent,
+                            background,
+                            publisher_id,
+                            wifi_ssid,
+                            wifi_bssid,
+                            venue_id,
+                            dwell_time
+                        ]
+
+                        out = str(temp_dat[0])
+                        for i in range(1,len(temp_dat)-1):
+                            out = out + "\t" + str(temp_dat[i])
+                        out = out + '\t' + str(temp_dat[-1]) + "\n"
+                        output.write(out)
+                        #print(repr(out))
+                        #writer.writerow(test)
+
+
+                        test = 10
+                    except UnknownTimeZoneError:
+                        print("Time zone error")
+
+
+                else:
+                    utils.ERROR("Latitude/longitude empty")
+                # get time with timezone aware
+
+            # print(line)
+            # commit in batches of 1000
+            c = c + 1
+            if c % 5000 == 0:
+                print(str(c))
+                #break
+
+    # final commit
+    output.seek(0)
+    contents = output.getvalue()
+    #print(repr(contents))
+    test = cur.copy_from(output, 'pings', sep='\t', null='Null')
+    # Commit inserts to DB
+    raw_conn.commit()
+
+    t2 = time.perf_counter()
+    print(f"Time {t2-t1:0.4f} seconds")
+
+
+
+
+def init_ping_table(fileList):
+    venue_tab = get_venue_table()
+    tf = TimezoneFinder()
+
+    ins = Pings.__table__.insert()
+    conn = engine.connect()
+
+
+    t1 = time.perf_counter()
+    # assumption: first row of data must be header
+    inFile = fileList[0]
+    inds = {}
+    data_to_insert = []
     c = 0
     with gzip.open(inFile, 'rt') as f:
         # csv_reader = csv.reader(f,escapechar='\\')
@@ -178,10 +466,10 @@ def init_ping_table(fileList):
 
                     try:
                         # time zone
-                        tz_name = tf.timezone_at(lng=longitude, lat=latitude)
-                        tz = timezone(tz_name)
+                        #tz_name = tf.timezone_at(lng=longitude, lat=latitude)
+                        #tz = timezone(tz_name)
                         timestamp = datetime.utcfromtimestamp(location_at)
-                        timestamp = timestamp.replace(tzinfo=tz)
+                        #timestamp = timestamp.replace(tzinfo=tz)
 
                         # venue
                         # if there is a venue get its id from venue_tab
@@ -235,32 +523,32 @@ def init_ping_table(fileList):
                         if wifi_bssid == '':
                             wifi_bssid = None
 
-                        # ceate ping object
-                        ping = Pings(
-                            device_id=advertiser_id,
-                            location_at=location_at,
-                            timestamp=timestamp,
-                            latitude=latitude,
-                            longitude=longitude,
-                            altitude=altitude,
-                            horizontal_accuracy=horizontal_accuracy,
-                            vertical_accuracy=vertical_accuracy,
-                            heading=heading,
-                            speed=speed,
-                            ipv_4=ipv_4,
-                            ipv_6=ipv_6,
-                            final_country=final_country,
-                            user_agent=user_agent,
-                            background=background,
-                            publisher_id=publisher_id,
-                            wifi_ssid=wifi_ssid,
-                            wifi_bssid=wifi_bssid,
-                            venue_id=venue_id,
-                            dwell_time=dwell_time
 
-                        )
-                        session.add(ping)
 
+                        temp_dat = {
+                            'device_id':advertiser_id,
+                            'location_at':location_at,
+                            'timestamp':timestamp,
+                            'latitude':latitude,
+                            'longitude':longitude,
+                            'altitude':altitude,
+                            'horizontal_accuracy':horizontal_accuracy,
+                            'vertical_accuracy':vertical_accuracy,
+                            'heading':heading,
+                            'speed':speed,
+                            'ipv_4':ipv_4,
+                            'ipv_6':ipv_6,
+                            'final_country':final_country,
+                            'user_agent':user_agent,
+                            'background':background,
+                            'publisher_id':publisher_id,
+                            'wifi_ssid':wifi_ssid,
+                            'wifi_bssid':wifi_bssid,
+                            'venue_id':venue_id,
+                            'dwell_time':dwell_time
+                        }
+                        data_to_insert.append(temp_dat)
+                        test = 10
                     except UnknownTimeZoneError:
                         print("Time zone error")
 
@@ -273,12 +561,12 @@ def init_ping_table(fileList):
             # commit in batches of 1000
             c = c + 1
             if c % 5000 == 0:
-                session.commit()
+
                 print(str(c))
                 # break
 
     # final commit
-    session.commit()
+    conn.execute(ins, data_to_insert)
     t2 = time.perf_counter()
     print(f"Time {t2-t1:0.4f} seconds")
 
@@ -327,10 +615,10 @@ def init_ping_table_temp(fileList):
 
                     try:
                         #time zone
-                        tz_name = tf.timezone_at(lng=longitude,lat=latitude)
-                        tz = timezone(tz_name)
+                        #tz_name = tf.timezone_at(lng=longitude,lat=latitude)
+                        #tz = timezone(tz_name)
                         timestamp = datetime.utcfromtimestamp(location_at)
-                        timestamp = timestamp.replace(tzinfo=tz)
+                        #timestamp = timestamp.replace(tzinfo=tz)
 
 
                         #venue
@@ -454,7 +742,7 @@ def main():
     #init_device_tables()
 
 
-    init_ping_table(files)
+    init_ping_table3(files)
 
 
 
