@@ -1,2 +1,4 @@
 raw/*
 db_code/tables/*
+db_code/files_to_process.csv
+db_code/error_files.csv

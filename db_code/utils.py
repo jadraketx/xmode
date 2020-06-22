@@ -3,6 +3,7 @@ import sys
 import logging
 import configparser
 import pandas as pd
+import numpy as np
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import Column, ForeignKey, Integer, String, Float, Table, DateTime
 from sqlalchemy.orm import relationship
@@ -101,6 +102,32 @@ class Pings(Base):
 
     venue_id = Column(Integer, ForeignKey('venue.id'), nullable=True)
     dwell_time = Column(Float,nullable=True)
+    source = Column(Integer,nullable=False)
 
     device = relationship("Device", back_populates = 'pings')
     venue = relationship(Venue, back_populates = 'pings')
+
+class FileManager():
+    def __init__(self,wd):
+        #check if files_to_process.csv exists
+        self.wd = wd
+        self.files_to_process_path = self.wd + 'files_to_process.csv'
+        #self.files_to_process = pd.DataFrame(columns=['index','path','status'], dtype={'index':'int','path':'str','status':'int'})
+        if os.path.exists(self.files_to_process_path):
+            self.files_to_process = pd.read_csv(self.files_to_process_path, usecols=['index','path','status','nrow'],dtype={'index':'int','path':'str','status':'int','nrow':'int'})
+        else:
+            logging.ERROR("files_to_process.csv not found: required")
+
+        self.file_errors_path = self.wd + 'error_files.csv'
+        self.file_errors = pd.DataFrame({
+                    'index': pd.Series([], dtype='int'),
+                    'path': pd.Series([], dtype='str'),
+                    'status': pd.Series([], dtype='int')})
+        if os.path.exists(self.file_errors_path):
+            self.file_errors = pd.read_csv(self.file_errors_path)
+
+    def update_file_list(self):
+        #write updated files_to_process_path
+        self.files_to_process.to_csv(self.files_to_process_path,sep=",",header=True,index=False)
+        #write list of files with errors
+        self.file_errors.to_csv(self.file_errors_path,sep=",",header=True,index=False)
